@@ -10,7 +10,9 @@ Geometry Dash YouTube community rewards platform.
 - Creator-only admin API guard for vandrexxgaming65@gmail.com.
 
 ## Important setup status
-Google OAuth and the live database are **not configured until you create the Cloudflare D1 database, apply migrations, and add the required secrets**. The preview dashboard still contains sample/demo interactions; it is not yet wired to the API. YouTube reward verification and redemption processing are not implemented yet.
+Google OAuth code is implemented, but sign-in remains inactive until you create a Google OAuth web client, add the five required Worker settings/secrets, and apply the D1 migration. The dashboard now checks the real session and displays the signed-in Google profile and server balance. Other reward interactions still include preview/demo placeholders; YouTube reward verification and redemption processing are not implemented yet.
+
+Follow [docs/GOOGLE_LOGIN_SETUP.md](docs/GOOGLE_LOGIN_SETUP.md) to activate real Google sign-in.
 
 ## Cloudflare setup
 1. Install Node.js and Wrangler: `npm install -g wrangler`.
@@ -18,10 +20,8 @@ Google OAuth and the live database are **not configured until you create the Clo
 3. Create D1: `wrangler d1 create mythix-hub`.
 4. Copy the returned database ID into `wrangler.toml`.
 5. Apply schema: `wrangler d1 migrations apply mythix-hub --remote`.
-6. Add secrets with `wrangler secret put GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`, and `TOKEN_ENCRYPTION_KEY`.
-7. Set `GOOGLE_REDIRECT_URI` as a Worker variable to your deployed `/api/auth/callback` URL.
-8. In Google Cloud, configure the OAuth consent screen, add the authorized redirect URI exactly, and enable YouTube Data API v3.
-9. Deploy: `wrangler deploy`.
+6. Add the four secrets and the `GOOGLE_REDIRECT_URI` variable in Cloudflare Worker Settings. See [Google login setup](docs/GOOGLE_LOGIN_SETUP.md) for exact values and Google Cloud steps.
+7. Deploy: `wrangler deploy`.
 
 Use `.dev.vars.example` as a checklist only. Never commit real credentials.
 
