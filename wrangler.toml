@@ -10,5 +10,5 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "mythix-hub"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "21ad938e-a2d5-4ee8-a173-e34bc0eef9e2"
 migrations_dir = "migrations"
