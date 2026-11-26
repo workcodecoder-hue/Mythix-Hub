@@ -5,8 +5,10 @@ const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo";
 const YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
 
-function json(data, status) {
-  return new Response(JSON.stringify(data), { status: status || 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+function json(data, status, extraHeaders) {
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  if (extraHeaders) for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  return new Response(JSON.stringify(data), { status: status || 200, headers });
 }
 function redirect(url, headers) { return new Response(null, { status: 302, headers: Object.assign({ location: url, "cache-control": "no-store" }, headers || {}) }); }
 function b64url(bytes) {
@@ -66,7 +68,7 @@ async function currentUser(request, env) {
   return await env.DB.prepare("SELECT id, email, display_name, youtube_channel_id, youtube_channel_name, token_balance, supporter_badge, content_tracker_unlocked, insider_unlocked, created_at FROM users WHERE id = ?").bind(id).first();
 }
 function requiredEnv(env) {
-  return ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "SESSION_SECRET"].filter(k => !env[k]);
+  return ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "SESSION_SECRET", "TOKEN_ENCRYPTION_KEY"].filter(k => !env[k]);
 }
 async function handle(request, env) {
   const url = new URL(request.url);
@@ -79,7 +81,7 @@ async function handle(request, env) {
     if (missing.length) return json({ error: "Google sign-in is not configured yet.", missing }, 503);
     const state = randomToken(32);
     const verifier = randomToken(48);
-    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
     await env.DB.prepare("INSERT INTO oauth_states (state, code_verifier, expires_at) VALUES (?, ?, datetime('now', '+10 minutes'))").bind(state, verifier).run();
     const params = new URLSearchParams({
       client_id: env.GOOGLE_CLIENT_ID,
