@@ -31,6 +31,7 @@ async function signSession(userId, secret) {
   return payload + "." + b64url(await hmac(payload, secret));
 }
 async function readSession(request, secret) {
+  if (!secret) return null;
   const cookie = request.headers.get("Cookie") || "";
   const item = cookie.split(";").map(x => x.trim()).find(x => x.startsWith(SESSION_COOKIE + "="));
   if (!item) return null;
