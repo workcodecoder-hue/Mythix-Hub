@@ -241,11 +241,11 @@ async function handle(request, env) {
     const redemptionId = "red_" + randomToken(16);
     const txId = "txn_" + randomToken(12);
     const results = await env.DB.batch([
-      env.DB.prepare("UPDATE users SET token_balance=token_balance-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=?").bind(item[1], user.id, item[1]),
-      env.DB.prepare("INSERT INTO redemptions (id,user_id,reward_key,cost,status,form_data) SELECT ?,?,?,?,'pending',? WHERE changes()=1").bind(redemptionId,user.id,key,item[1],JSON.stringify({ label:item[0], details })),
-      env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) SELECT ?,?,-?,?,? WHERE EXISTS (SELECT 1 FROM redemptions WHERE id=?)").bind(txId,user.id,item[1],"reward_redemption:"+key,redemptionId)
+      env.DB.prepare("INSERT INTO redemptions (id,user_id,reward_key,cost,status,form_data) SELECT ?,?,?,?,'pending',? WHERE EXISTS (SELECT 1 FROM users WHERE id=? AND token_balance>=?)").bind(redemptionId,user.id,key,item[1],JSON.stringify({ label:item[0], details }),user.id,item[1]),
+      env.DB.prepare("UPDATE users SET token_balance=token_balance-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=? AND EXISTS (SELECT 1 FROM redemptions WHERE id=? AND status='pending')").bind(item[1],user.id,item[1],redemptionId),
+      env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) SELECT ?,?,-?,?,? WHERE EXISTS (SELECT 1 FROM redemptions WHERE id=? AND status='pending')").bind(txId,user.id,item[1],"reward_redemption:"+key,redemptionId)
     ]);
-    if (!results[1] || !results[1].meta || results[1].meta.changes !== 1)
+    if (!results[0] || !results[0].meta || results[0].meta.changes !== 1 || !results[1] || !results[1].meta || results[1].meta.changes !== 1)
       return json({ error: "Not enough tokens for this reward, or the request could not be created." }, 409);
     const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
     return json({ ok: true, redemption_id:redemptionId, reward:item[0], cost:item[1], status:"pending", token_balance:updated.token_balance });
@@ -275,6 +275,7 @@ export default {
   async fetch(request, env) {
     try { return await handle(request, env); }
     catch (error) {
+      console.error("Mythix Hub request failed:", error && error.stack || error);
       return json({ error: "Server error.", message: env.ENVIRONMENT === "development" ? String(error && error.message || error) : "Please try again later." }, 500);
     }
   }
