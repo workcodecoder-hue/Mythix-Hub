@@ -189,12 +189,66 @@ async function handle(request, env) {
           env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,?,?,?)").bind("txn_" + randomToken(12), redemption.user_id, redemption.cost, "redemption_refund", id)
         ]);
       } else {
-        await env.DB.prepare("UPDATE redemptions SET status='fulfilled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(id).run();
+        await env.DB.batch([
+          env.DB.prepare("UPDATE redemptions SET status='fulfilled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(id),
+          env.DB.prepare("UPDATE users SET supporter_badge=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND ?='exclusive-vip-badge'").bind(redemption.user_id, redemption.reward_key),
+          env.DB.prepare("UPDATE users SET content_tracker_unlocked=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND ?='content-tracker'").bind(redemption.user_id, redemption.reward_key),
+          env.DB.prepare("UPDATE users SET insider_unlocked=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND ?='vip-insider-perk'").bind(redemption.user_id, redemption.reward_key)
+        ]);
       }
       await env.DB.prepare("INSERT INTO audit_log (id,actor_email,action,target_user_id,details) VALUES (?,?,?,?,?)").bind("audit_" + randomToken(12), actor.email, "redemption_" + status, redemption.user_id, JSON.stringify({ redemption_id: id })).run();
       return json({ ok: true, status });
     }
     return json({ error: "Admin endpoint not found." }, 404);
+  }
+
+  if (request.method === "GET" && path === "/api/activity") {
+    const user = await currentUser(request, env);
+    if (!user) return json({ error: "Sign in first." }, 401);
+    const [transactions, redemptions] = await Promise.all([
+      env.DB.prepare("SELECT amount, reason, created_at FROM token_transactions WHERE user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all(),
+      env.DB.prepare("SELECT id, reward_key, cost, status, form_data, created_at, updated_at FROM redemptions WHERE user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all()
+    ]);
+    return json({ ok: true, transactions: transactions.results || [], redemptions: redemptions.results || [] });
+  }
+  if (request.method === "POST" && path === "/api/rewards/redeem") {
+    const user = await currentUser(request, env);
+    if (!user) return json({ error: "Sign in first." }, 401);
+    let body;
+    try { body = await request.json(); } catch (_) { return json({ error: "Invalid request body." }, 400); }
+    const catalog = {
+      "content-tracker": ["Content Tracker",15],
+      "in-game-challenge-pick": ["In-Game Challenge Pick",25],
+      "level-showcase": ["Level Showcase",30],
+      "priority-level-review": ["Priority Level Review",35],
+      "wheel-of-fortune": ["Wheel of Fortune",45],
+      "three-week-video-shoutout": ["3-Week Video Shoutout",50],
+      "exclusive-vip-badge": ["Exclusive VIP Badge",55],
+      "video-topic-theme": ["Video Topic / Theme",65],
+      "mod-upgrade-roll": ["Mod Upgrade Roll",70],
+      "direct-gd-collab-session": ["Direct GD Collab Session",75],
+      "wall-of-fame-listing": ["Wall of Fame Listing",85],
+      "video-intro-shoutout": ["Video Intro Shoutout",95],
+      "vip-insider-perk": ["VIP Insider Perk",100],
+      "custom-profile-picture-graphic": ["Custom Profile Picture / Graphic",500]
+    };
+    const key = String(body.reward_key || "");
+    const item = catalog[key];
+    if (!item) return json({ error: "That reward is not in the catalog." }, 400);
+    const details = String(body.details || "").trim().slice(0, 1000);
+    if (["in-game-challenge-pick","level-showcase","priority-level-review","video-topic-theme","direct-gd-collab-session","custom-profile-picture-graphic"].includes(key) && details.length < 3)
+      return json({ error: "Please add a few details so the creator knows what you want." }, 400);
+    const redemptionId = "red_" + randomToken(16);
+    const txId = "txn_" + randomToken(12);
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE users SET token_balance=token_balance-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=?").bind(item[1], user.id, item[1]),
+      env.DB.prepare("INSERT INTO redemptions (id,user_id,reward_key,cost,status,form_data) SELECT ?,?,?,?,'pending',? WHERE changes()=1").bind(redemptionId,user.id,key,item[1],JSON.stringify({ label:item[0], details })),
+      env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) SELECT ?,?,-?,?,? WHERE EXISTS (SELECT 1 FROM redemptions WHERE id=?)").bind(txId,user.id,item[1],"reward_redemption:"+key,redemptionId)
+    ]);
+    if (!results[1] || !results[1].meta || results[1].meta.changes !== 1)
+      return json({ error: "Not enough tokens for this reward, or the request could not be created." }, 409);
+    const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
+    return json({ ok: true, redemption_id:redemptionId, reward:item[0], cost:item[1], status:"pending", token_balance:updated.token_balance });
   }
   if (request.method === "POST" && path === "/api/checkin") {
     const user = await currentUser(request, env);
