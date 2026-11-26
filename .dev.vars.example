@@ -1,0 +1,7 @@
+# Set these as Cloudflare Worker secrets / vars. Never commit real values.
+GOOGLE_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
+GOOGLE_REDIRECT_URI=https://YOUR-WORKER-DOMAIN/api/auth/callback
+SESSION_SECRET=replace-with-a-long-random-secret
+# Base64 encoding of exactly 32 random bytes; encrypts Google API tokens at rest.
+TOKEN_ENCRYPTION_KEY=base64-encoded-32-byte-key
