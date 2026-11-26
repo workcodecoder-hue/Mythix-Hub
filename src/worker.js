@@ -142,7 +142,59 @@ async function handle(request, env) {
   }
   if (request.method === "GET" && path === "/api/me") {
     const user = await currentUser(request, env);
-    return user ? json({ authenticated: true, user }) : json({ authenticated: false, user: null }, 401);
+    return user ? json({ authenticated: true, user: { ...user, is_admin: (user.email || "").toLowerCase() === ADMIN_EMAIL } }) : json({ authenticated: false, user: null }, 401);
+  }
+  if (path.startsWith("/api/admin")) {
+    const actor = await currentUser(request, env);
+    if (!actor) return json({ error: "Sign in first." }, 401);
+    if ((actor.email || "").toLowerCase() !== ADMIN_EMAIL) return json({ error: "Admin access required." }, 403);
+    if (request.method === "GET" && path === "/api/admin/dashboard") {
+      const [stats, users, redemptions] = await Promise.all([
+        env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COALESCE(SUM(token_balance),0) FROM users) AS tokens, (SELECT COUNT(*) FROM redemptions WHERE status='pending') AS pending, (SELECT COUNT(*) FROM redemptions) AS redemptions").first(),
+        env.DB.prepare("SELECT display_name, email, token_balance, created_at FROM users ORDER BY created_at DESC LIMIT 100").all(),
+        env.DB.prepare("SELECT r.id, r.reward_key, r.cost, r.status, r.created_at, u.email FROM redemptions r JOIN users u ON u.id=r.user_id ORDER BY r.created_at DESC LIMIT 100").all()
+      ]);
+      return json({ ok: true, stats, users: users.results || [], redemptions: redemptions.results || [] });
+    }
+    if (request.method === "POST" && path === "/api/admin/tokens") {
+      const body = await request.json();
+      const email = String(body.email || "").trim().toLowerCase();
+      const amount = Number(body.amount);
+      const reason = String(body.reason || "").trim().slice(0, 120);
+      if (!email || !Number.isSafeInteger(amount) || amount === 0 || Math.abs(amount) > 100000 || !reason) return json({ error: "Enter a valid email, non-zero whole token amount (max 100,000), and reason." }, 400);
+      const target = await env.DB.prepare("SELECT id, token_balance FROM users WHERE email = ?").bind(email).first();
+      if (!target) return json({ error: "No Mythix Hub account found for that email." }, 404);
+      if (target.token_balance + amount < 0) return json({ error: "This adjustment would make the balance negative." }, 400);
+      const txId = "txn_" + randomToken(12);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE users SET token_balance = token_balance + ?, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(amount, target.id),
+        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,?,?,?)").bind(txId, target.id, amount, "admin_adjustment: " + reason, txId),
+        env.DB.prepare("INSERT INTO audit_log (id,actor_email,action,target_user_id,details) VALUES (?,?,?,?,?)").bind("audit_" + randomToken(12), actor.email, "token_adjustment", target.id, JSON.stringify({ amount, reason }))
+      ]);
+      const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(target.id).first();
+      return json({ ok: true, token_balance: updated.token_balance });
+    }
+    if (request.method === "POST" && path === "/api/admin/redemptions") {
+      const body = await request.json();
+      const id = String(body.id || "");
+      const status = String(body.status || "");
+      if (!id || !["fulfilled", "rejected"].includes(status)) return json({ error: "Invalid redemption update." }, 400);
+      const redemption = await env.DB.prepare("SELECT id,user_id,cost,status FROM redemptions WHERE id=?").bind(id).first();
+      if (!redemption) return json({ error: "Reward request not found." }, 404);
+      if (redemption.status !== "pending") return json({ error: "This reward request has already been processed." }, 409);
+      if (status === "rejected") {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE redemptions SET status='rejected',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(id),
+          env.DB.prepare("UPDATE users SET token_balance=token_balance+?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(redemption.cost, redemption.user_id),
+          env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,?,?,?)").bind("txn_" + randomToken(12), redemption.user_id, redemption.cost, "redemption_refund", id)
+        ]);
+      } else {
+        await env.DB.prepare("UPDATE redemptions SET status='fulfilled',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(id).run();
+      }
+      await env.DB.prepare("INSERT INTO audit_log (id,actor_email,action,target_user_id,details) VALUES (?,?,?,?,?)").bind("audit_" + randomToken(12), actor.email, "redemption_" + status, redemption.user_id, JSON.stringify({ redemption_id: id })).run();
+      return json({ ok: true, status });
+    }
+    return json({ error: "Admin endpoint not found." }, 404);
   }
   if (request.method === "POST" && path === "/api/checkin") {
     const user = await currentUser(request, env);
