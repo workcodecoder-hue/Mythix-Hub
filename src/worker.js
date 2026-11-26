@@ -63,6 +63,95 @@ async function encryptSecret(value, keyText) {
   const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
   return b64url(iv) + "." + b64url(new Uint8Array(encrypted));
 }
+const CREATOR_CHANNEL_ID = "UCe1nKAng16nL6FJnyxkmExA";
+const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
+async function decryptSecret(value, keyText) {
+  if (!value || !keyText) return null;
+  const raw = Uint8Array.from(atob(keyText), c => c.charCodeAt(0));
+  if (raw.length !== 32) throw new Error("TOKEN_ENCRYPTION_KEY must be base64-encoded 32 bytes");
+  const parts = value.split(".");
+  if (parts.length !== 2) throw new Error("Stored Google token has an invalid format.");
+  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64url(parts[0]) }, key, fromB64url(parts[1]));
+  return new TextDecoder().decode(plain);
+}
+async function youtubeRequest(accessToken, endpoint, params) {
+  const query = new URLSearchParams(params || {});
+  const response = await fetch(YOUTUBE_API + "/" + endpoint + "?" + query.toString(), {
+    headers: { authorization: "Bearer " + accessToken }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const reason = data && data.error && data.error.errors && data.error.errors[0] && data.error.errors[0].reason;
+    const message = data && data.error && data.error.message;
+    const error = new Error(message || "YouTube API request failed.");
+    error.status = response.status;
+    error.reason = reason || "";
+    throw error;
+  }
+  return data;
+}
+async function youtubeAccess(user, env) {
+  let access = await decryptSecret(user.google_access_token_enc, env.TOKEN_ENCRYPTION_KEY);
+  const expires = user.google_token_expires_at ? Date.parse(user.google_token_expires_at.replace(" ", "T") + (user.google_token_expires_at.endsWith("Z") ? "" : "Z")) : 0;
+  if (!access || !expires || expires < Date.now() + 90000) {
+    const refresh = await decryptSecret(user.google_refresh_token_enc, env.TOKEN_ENCRYPTION_KEY);
+    if (!refresh) throw new Error("Your Google connection has no refresh token. Sign out, then reconnect Google and approve YouTube access.");
+    const response = await fetch(GOOGLE_TOKEN, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, refresh_token: refresh, grant_type: "refresh_token" })
+    });
+    const tokens = await response.json().catch(() => ({}));
+    if (!response.ok || !tokens.access_token) {
+      if (tokens.error === "invalid_grant") throw new Error("Your Google connection expired. Sign out, then reconnect Google to restore YouTube verification.");
+      throw new Error("Could not refresh your Google connection. Please reconnect Google.");
+    }
+    access = tokens.access_token;
+    const encrypted = await encryptSecret(access, env.TOKEN_ENCRYPTION_KEY);
+    await env.DB.prepare("UPDATE users SET google_access_token_enc=?, google_token_expires_at=datetime('now','+' || ? || ' seconds'), updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .bind(encrypted, Math.max(60, Number(tokens.expires_in || 3600) - 60), user.id).run();
+  }
+  return access;
+}
+async function memberYoutubeIdentity(user, env, access) {
+  const data = await youtubeRequest(access, "channels", { part: "id,snippet", mine: "true", maxResults: "1" });
+  const channel = (data.items || [])[0];
+  if (!channel) throw new Error("No YouTube channel was found on this Google account. Make sure you signed in with the Google account that owns your YouTube channel.");
+  await env.DB.prepare("UPDATE users SET youtube_channel_id=?, youtube_channel_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .bind(channel.id, channel.snippet && channel.snippet.title || "YouTube channel", user.id).run();
+  return { id: channel.id, name: channel.snippet && channel.snippet.title || "YouTube channel" };
+}
+async function latestCreatorVideo(access) {
+  const creator = await youtubeRequest(access, "channels", { part: "contentDetails,snippet", id: CREATOR_CHANNEL_ID, maxResults: "1" });
+  const channel = (creator.items || [])[0];
+  if (!channel) throw new Error("The Mythix creator channel could not be found by YouTube. Check that YouTube Data API v3 is enabled in the Google Cloud project.");
+  const uploads = channel.contentDetails && channel.contentDetails.relatedPlaylists && channel.contentDetails.relatedPlaylists.uploads;
+  if (!uploads) return null;
+  const playlist = await youtubeRequest(access, "playlistItems", { part: "snippet,contentDetails", playlistId: uploads, maxResults: "1" });
+  const item = (playlist.items || [])[0];
+  if (!item) return null;
+  const videoId = item.contentDetails && item.contentDetails.videoId || item.snippet && item.snippet.resourceId && item.snippet.resourceId.videoId;
+  if (!videoId) return null;
+  const detail = await youtubeRequest(access, "videos", { part: "snippet,contentDetails", id: videoId });
+  const video = (detail.items || [])[0];
+  if (!video) return null;
+  return {
+    id: video.id,
+    title: video.snippet && video.snippet.title || item.snippet.title || "Latest Mythix upload",
+    description: video.snippet && video.snippet.description || "",
+    publishedAt: video.snippet && video.snippet.publishedAt || item.snippet.publishedAt || null,
+    thumbnail: video.snippet && video.snippet.thumbnails && ((video.snippet.thumbnails.maxres || video.snippet.thumbnails.high || video.snippet.thumbnails.medium || {}).url) || "",
+    url: "https://www.youtube.com/watch?v=" + encodeURIComponent(video.id)
+  };
+}
+function youtubeErrorResponse(error) {
+  const message = String(error && error.message || "YouTube verification failed.");
+  const status = error && error.status;
+  if (status === 401 || /reconnect Google|no refresh token/i.test(message)) return json({ error: message, reconnect: true }, 401);
+  if (status === 403) return json({ error: "YouTube API access was denied. Make sure YouTube Data API v3 is enabled in the Google Cloud project and that this Google account has YouTube access.", details: message }, 502);
+  return json({ error: message }, 502);
+}
 async function currentUser(request, env) {
   const id = await readSession(request, env.SESSION_SECRET);
   if (!id) return null;
@@ -202,6 +291,79 @@ async function handle(request, env) {
     return json({ error: "Admin endpoint not found." }, 404);
   }
 
+  if (request.method === "GET" && path === "/api/youtube/status") {
+    const user = await currentUser(request, env);
+    if (!user) return json({ error: "Sign in first." }, 401);
+    try {
+      const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
+      const access = await youtubeAccess({ ...user, ...stored }, env);
+      const [identity, video] = await Promise.all([memberYoutubeIdentity(user, env, access), latestCreatorVideo(access)]);
+      const claims = video ? await env.DB.prepare("SELECT reward_type FROM video_reward_claims WHERE user_id=? AND video_id=?").bind(user.id, video.id).all() : { results: [] };
+      const claimed = (claims.results || []).map(x => x.reward_type);
+      return json({ ok: true, channel: identity, video, claimed, rewards: { like: claimed.includes("like"), comment: claimed.includes("comment") } });
+    } catch (error) { return youtubeErrorResponse(error); }
+  }
+  if (request.method === "POST" && path === "/api/youtube/verify/like") {
+    const user = await currentUser(request, env);
+    if (!user) return json({ error: "Sign in first." }, 401);
+    try {
+      const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
+      const access = await youtubeAccess({ ...user, ...stored }, env);
+      await memberYoutubeIdentity(user, env, access);
+      const video = await latestCreatorVideo(access);
+      if (!video) return json({ error: "There is no public upload to verify yet." }, 404);
+      const existing = await env.DB.prepare("SELECT id FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='like'").bind(user.id, video.id).first();
+      if (existing) return json({ error: "You've already earned the like reward for this video.", already_claimed: true }, 409);
+      const rating = await youtubeRequest(access, "videos/getRating", { id: video.id });
+      const item = (rating.items || []).find(x => x.videoId === video.id);
+      if (!item || item.rating !== "like") return json({ error: "YouTube doesn't show a like from your connected channel yet. Like the video while signed into this Google account, then try again." }, 409);
+      const claimId = "vrc_" + randomToken(12);
+      const inserted = await env.DB.prepare("INSERT OR IGNORE INTO video_reward_claims (id,user_id,video_id,reward_type) VALUES (?,?,?,'like')").bind(claimId,user.id,video.id).run();
+      if (!inserted.meta || inserted.meta.changes !== 1) return json({ error: "You've already earned the like reward for this video.", already_claimed: true }, 409);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE users SET token_balance=token_balance+10,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id),
+        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_like',?)").bind("txn_"+randomToken(12),user.id,video.id)
+      ]);
+      const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
+      return json({ ok: true, awarded: 10, action: "like", video, token_balance: updated.token_balance });
+    } catch (error) { return youtubeErrorResponse(error); }
+  }
+  if (request.method === "POST" && path === "/api/youtube/verify/comment") {
+    const user = await currentUser(request, env);
+    if (!user) return json({ error: "Sign in first." }, 401);
+    try {
+      const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
+      const access = await youtubeAccess({ ...user, ...stored }, env);
+      const identity = await memberYoutubeIdentity(user, env, access);
+      const video = await latestCreatorVideo(access);
+      if (!video) return json({ error: "There is no public upload to verify yet." }, 404);
+      const existing = await env.DB.prepare("SELECT id FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='comment'").bind(user.id, video.id).first();
+      if (existing) return json({ error: "You've already earned the comment reward for this video.", already_claimed: true }, 409);
+      let pageToken = "";
+      let found = false;
+      for (let page=0; page<5; page++) {
+        const params = { part: "snippet", videoId: video.id, maxResults: "100", order: "time" };
+        if (pageToken) params.pageToken = pageToken;
+        const comments = await youtubeRequest(access, "commentThreads", params);
+        found = (comments.items || []).some(thread => {
+          const comment = thread.snippet && thread.snippet.topLevelComment && thread.snippet.topLevelComment.snippet;
+          return comment && comment.authorChannelId && comment.authorChannelId.value === identity.id;
+        });
+        if (found || !comments.nextPageToken) break;
+        pageToken = comments.nextPageToken;
+      }
+      if (!found) return json({ error: "We couldn't find a public top-level comment from your connected channel on this video yet. Post a comment while signed into this Google account, wait for YouTube to publish it, then try again. Comments held for review or removed cannot be verified." }, 409);
+      const claimId = "vrc_" + randomToken(12);
+      const inserted = await env.DB.prepare("INSERT OR IGNORE INTO video_reward_claims (id,user_id,video_id,reward_type) VALUES (?,?,?,'comment')").bind(claimId,user.id,video.id).run();
+      if (!inserted.meta || inserted.meta.changes !== 1) return json({ error: "You've already earned the comment reward for this video.", already_claimed: true }, 409);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE users SET token_balance=token_balance+10,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id),
+        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_comment',?)").bind("txn_"+randomToken(12),user.id,video.id)
+      ]);
+      const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
+      return json({ ok: true, awarded: 10, action: "comment", video, token_balance: updated.token_balance });
+    } catch (error) { return youtubeErrorResponse(error); }
+  }
   if (request.method === "GET" && path === "/api/activity") {
     const user = await currentUser(request, env);
     if (!user) return json({ error: "Sign in first." }, 401);
