@@ -93,11 +93,14 @@ async function handle(request, env) {
       code_challenge: challenge,
       code_challenge_method: "S256",
       access_type: "offline",
-      prompt: "consent"
+      prompt: "select_account",
+      include_granted_scopes: "true"
     });
     return redirect(GOOGLE_AUTH + "?" + params.toString());
   }
   if (request.method === "GET" && path === "/api/auth/callback") {
+    const googleError = url.searchParams.get("error");
+    if (googleError) return redirect("/?auth_error=" + encodeURIComponent(googleError));
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     if (!code || !state) return json({ error: "Missing OAuth code or state." }, 400);
