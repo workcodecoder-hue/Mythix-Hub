@@ -152,7 +152,7 @@ async function handle(request, env) {
       const [stats, users, redemptions] = await Promise.all([
         env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS users, (SELECT COALESCE(SUM(token_balance),0) FROM users) AS tokens, (SELECT COUNT(*) FROM redemptions WHERE status='pending') AS pending, (SELECT COUNT(*) FROM redemptions) AS redemptions").first(),
         env.DB.prepare("SELECT display_name, email, token_balance, created_at FROM users ORDER BY created_at DESC LIMIT 100").all(),
-        env.DB.prepare("SELECT r.id, r.reward_key, r.cost, r.status, r.created_at, u.email FROM redemptions r JOIN users u ON u.id=r.user_id ORDER BY r.created_at DESC LIMIT 100").all()
+        env.DB.prepare("SELECT r.id, r.reward_key, r.cost, r.status, r.form_data, r.created_at, u.email FROM redemptions r JOIN users u ON u.id=r.user_id ORDER BY r.created_at DESC LIMIT 100").all()
       ]);
       return json({ ok: true, stats, users: users.results || [], redemptions: redemptions.results || [] });
     }
