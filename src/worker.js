@@ -341,7 +341,7 @@ async function handle(request, env) {
       if (existing) return json({ error: "You've already earned the comment reward for this video.", already_claimed: true }, 409);
       let pageToken = "";
       let found = false;
-      for (let page=0; page<5; page++) {
+      for (let page=0; page<10; page++) {
         const params = { part: "snippet", videoId: video.id, maxResults: "100", order: "time" };
         if (pageToken) params.pageToken = pageToken;
         const comments = await youtubeRequest(access, "commentThreads", params);
