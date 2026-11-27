@@ -99,11 +99,11 @@ async function webPush(subscription,payload,env){
  const serverPublic=new Uint8Array(await crypto.subtle.exportKey("raw",serverPair.publicKey));
  const shared=new Uint8Array(await crypto.subtle.deriveBits({name:"ECDH",public:uaKey},serverPair.privateKey,256));
  const prkKey=await hmac256(auth,shared);
- const info=new Uint8Array([...new TextEncoder().encode("WebPush: info\\0"),...uaPublic,...serverPublic]);
+ const info=new Uint8Array([...new TextEncoder().encode("WebPush: info\0"),...uaPublic,...serverPublic]);
  const ikm=await hkdfExpand(prkKey,info,32),salt=crypto.getRandomValues(new Uint8Array(16)),prk=await hmac256(salt,ikm);
- const cek=await hkdfExpand(prk,new TextEncoder().encode("Content-Encoding: aes128gcm\\0"),16);
- const nonce=await hkdfExpand(prk,new TextEncoder().encode("Content-Encoding: nonce\\0"),12);
- const plain=new TextEncoder().encode(JSON.stringify(payload)+"\\x02");
+ const cek=await hkdfExpand(prk,new TextEncoder().encode("Content-Encoding: aes128gcm\0"),16);
+ const nonce=await hkdfExpand(prk,new TextEncoder().encode("Content-Encoding: nonce\0"),12);
+ const plain=new TextEncoder().encode(JSON.stringify(payload)+"\x02");
  const aes=await crypto.subtle.importKey("raw",cek,{name:"AES-GCM"},false,["encrypt"]);
  const encrypted=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv:nonce,tagLength:128},aes,plain));
  const record=new Uint8Array(16+4+1+serverPublic.length+encrypted.length);record.set(salt,0);new DataView(record.buffer).setUint32(16,4096,false);record[20]=serverPublic.length;record.set(serverPublic,21);record.set(encrypted,21+serverPublic.length);
