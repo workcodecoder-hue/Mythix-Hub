@@ -315,9 +315,10 @@ async function handle(request, env) {
       const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
       const access = await youtubeAccess({ ...user, ...stored }, env);
       const [identity, video] = await Promise.all([memberYoutubeIdentity(user, env, access), latestCreatorVideo(access)]);
-      const claims = video ? await env.DB.prepare("SELECT reward_type FROM video_reward_claims WHERE user_id=? AND video_id=?").bind(user.id, video.id).all() : { results: [] };
+      const claims = video ? await env.DB.prepare("SELECT reward_type FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='like'").bind(user.id, video.id).all() : { results: [] };
       const claimed = (claims.results || []).map(x => x.reward_type);
-      return json({ ok: true, channel: identity, video, claimed, rewards: { like: claimed.includes("like"), comment: claimed.includes("comment") } });
+      const monitor = video ? await env.DB.prepare("SELECT status, deadline_at FROM youtube_like_monitors WHERE user_id=? AND video_id=? AND status='pending' ORDER BY started_at DESC LIMIT 1").bind(user.id, video.id).first() : null;
+      return json({ ok: true, channel: identity, video, claimed, monitoring: !!monitor, monitor_deadline: monitor ? monitor.deadline_at : null, rewards: { like: claimed.includes("like") } });
     } catch (error) { return youtubeErrorResponse(error); }
   }
   if (request.method === "POST" && path === "/api/youtube/verify/like") {
@@ -334,14 +335,19 @@ async function handle(request, env) {
       const item = (rating.items || []).find(x => x.videoId === video.id);
       if (!item || item.rating !== "like") return json({ error: "YouTube doesn't show a like from your connected channel yet. Like the video while signed into this Google account, then try again." }, 409);
       const claimId = "vrc_" + randomToken(12);
+      const startedAt = Date.now();
+      const deadlineAt = startedAt + 300000;
       const inserted = await env.DB.prepare("INSERT OR IGNORE INTO video_reward_claims (id,user_id,video_id,reward_type) VALUES (?,?,?,'like')").bind(claimId,user.id,video.id).run();
       if (!inserted.meta || inserted.meta.changes !== 1) return json({ error: "You've already earned the like reward for this video.", already_claimed: true }, 409);
       await env.DB.batch([
         env.DB.prepare("UPDATE users SET token_balance=token_balance+10,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id),
-        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_like',?)").bind("txn_"+randomToken(12),user.id,video.id)
+        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_like',?)").bind("txn_"+randomToken(12),user.id,video.id),
+        env.DB.prepare("INSERT INTO youtube_like_monitors (id,user_id,video_id,claim_id,started_at,deadline_at,status) VALUES (?,?,?,?,?,?,'pending')").bind("ylm_"+randomToken(12),user.id,video.id,claimId,startedAt,deadlineAt)
       ]);
+      const monitor = env.LIKE_MONITOR.get(env.LIKE_MONITOR.idFromName("global"));
+      await monitor.fetch("https://like-monitor/schedule", { method: "POST" });
       const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
-      return json({ ok: true, awarded: 10, action: "like", video, token_balance: updated.token_balance });
+      return json({ ok: true, awarded: 10, action: "like", monitoring: true, monitor_seconds: 300, token_balance: updated.token_balance });
     } catch (error) { return youtubeErrorResponse(error); }
   }
   if (request.method === "GET" && path === "/api/activity") {
@@ -377,6 +383,8 @@ async function handle(request, env) {
     const key = String(body.reward_key || "");
     const item = catalog[key];
     if (!item) return json({ error: "That reward is not in the catalog." }, 400);
+    const pendingLike = await env.DB.prepare("SELECT COUNT(*) AS count FROM youtube_like_monitors WHERE user_id=? AND status='pending'").bind(user.id).first();
+    if (pendingLike && pendingLike.count > 0) return json({ error: "Your like reward is still being monitored. You can request rewards once the 5-minute check finishes." }, 409);
     const details = String(body.details || "").trim().slice(0, 1000);
     if (["in-game-challenge-pick","level-showcase","priority-level-review","video-topic-theme","direct-gd-collab-session","custom-profile-picture-graphic"].includes(key) && details.length < 3)
       return json({ error: "Please add a few details so the creator knows what you want." }, 400);
