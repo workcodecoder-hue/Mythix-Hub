@@ -420,6 +420,8 @@ async function handle(request, env) {
     if ((user.email || "").toLowerCase() !== ADMIN_EMAIL) return json({ error: "Admin access required." }, 403);
     return json({ ok: true, admin: true, message: "Creator-only API access verified." });
   }
+  if (request.method === "GET" && path === "/manifest.webmanifest") return new Response(JSON.stringify({name:"Mythix Hub",short_name:"Mythix Hub",description:"Geometry Dash community rewards.",start_url:"/",scope:"/",display:"standalone",orientation:"portrait",background_color:"#090914",theme_color:"#090914",icons:[{src:"/icons/mythix-icon.svg",sizes:"any",type:"image/svg+xml",purpose:"any"}]}), { headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" } });
+  if (request.method === "GET" && path === "/icons/mythix-icon.svg") return new Response('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#d946ef"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="#090914"/><rect x="34" y="34" width="444" height="444" rx="96" fill="url(#g)"/><path d="M112 354V158h65l79 100 79-100h65v196h-67V260l-77 93-77-93v94z" fill="#fff"/></svg>', { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" } });
   if (request.method === "GET" && (path === "/" || path === "/index.html")) return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   return env.ASSETS.fetch(request);
 }
