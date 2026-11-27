@@ -342,7 +342,7 @@ async function handle(request, env) {
       if (!inserted.meta || inserted.meta.changes !== 1) return json({ error: "You've already earned the like reward for this video.", already_claimed: true }, 409);
       await env.DB.batch([
         env.DB.prepare("UPDATE users SET token_balance=token_balance+10,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id),
-        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_like',?)").bind("txn_"+randomToken(12),user.id,video.id),
+        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_like',?)").bind("txn_"+randomToken(12),user.id,claimId),
         env.DB.prepare("INSERT INTO youtube_like_monitors (id,user_id,video_id,claim_id,started_at,deadline_at,status) VALUES (?,?,?,?,?,?,'pending')").bind("ylm_"+randomToken(12),user.id,video.id,claimId,startedAt,deadlineAt)
       ]);
       const monitor = env.LIKE_MONITOR.get(env.LIKE_MONITOR.idFromName("global"));
@@ -446,7 +446,7 @@ export class LikeMonitor {
           if (!balance || balance.token_balance < 10) { console.error("Like reversal waiting for sufficient balance", monitor.id); return; }
           await env.DB.batch([
             env.DB.prepare("UPDATE users SET token_balance=token_balance-10,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=10").bind(monitor.user_id),
-            env.DB.prepare("INSERT OR IGNORE INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?, -10,'youtube_like_reversal',?)").bind("txn_"+randomToken(12),monitor.user_id,monitor.video_id),
+            env.DB.prepare("INSERT OR IGNORE INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?, -10,'youtube_like_reversal',?)").bind("txn_"+randomToken(12),monitor.user_id,monitor.claim_id),
             env.DB.prepare("DELETE FROM video_reward_claims WHERE id=? AND user_id=? AND reward_type='like'").bind(monitor.claim_id,monitor.user_id),
             env.DB.prepare("UPDATE youtube_like_monitors SET status='reversed',last_checked_at=? WHERE id=? AND status='pending'").bind(now,monitor.id)
           ]);
