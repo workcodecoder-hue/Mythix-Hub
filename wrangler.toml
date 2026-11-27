@@ -12,3 +12,11 @@ binding = "DB"
 database_name = "mythix-hub"
 database_id = "21ad938e-a2d5-4ee8-a173-e34bc0eef9e2"
 migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "LIKE_MONITOR"
+class_name = "LikeMonitor"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LikeMonitor"]
