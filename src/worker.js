@@ -133,4 +133,5 @@ async function handle(req,env){
  if(p==="/api/presence"&&m==="POST"){await env.DB.prepare("UPDATE messenger_users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id).run();return json({ok:true})}
  return json({error:"Not found."},404);
 }
-export class LikeMonitor { constructor(ctx,env){this.ctx=ctx;this.env=env;} }\nexport default {async fetch(req,env){try{return await handle(req,env)}catch(e){console.error("Mythix Messenger error",e);return json({error:"Server error. Please try again."},500)}}};
+export class LikeMonitor { constructor(ctx,env){this.ctx=ctx;this.env=env;} }
+export default {async fetch(req,env){try{return await handle(req,env)}catch(e){console.error("Mythix Messenger error",e);return json({error:"Server error. Please try again."},500)}}};
