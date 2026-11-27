@@ -148,9 +148,19 @@ async function latestCreatorVideo(access) {
 function youtubeErrorResponse(error) {
   const message = String(error && error.message || "YouTube verification failed.");
   const status = error && error.status;
+  const reason = String(error && error.reason || "");
   if (status === 401 || /reconnect Google|no refresh token/i.test(message)) return json({ error: message, reconnect: true }, 401);
-  if (status === 403) return json({ error: "YouTube API access was denied. Make sure YouTube Data API v3 is enabled in the Google Cloud project and that this Google account has YouTube access.", details: message }, 502);
-  return json({ error: message }, 502);
+  if (status === 403) {
+    const hint = /accessNotConfigured|SERVICE_DISABLED/i.test(reason + " " + message)
+      ? "Enable YouTube Data API v3 in the Google Cloud project used by this OAuth client, wait a few minutes, then retry."
+      : /insufficientPermissions|insufficient_scope/i.test(reason + " " + message)
+        ? "This Google login has not granted the YouTube read-only permission. Sign out of Mythix Hub and sign in again, approving the YouTube permission."
+        : /youtubeSignupRequired|youtubeSignup/i.test(reason + " " + message)
+          ? "This Google account needs a YouTube channel before it can use YouTube missions."
+          : "Check the Google account's YouTube access and the YouTube Data API v3 settings.";
+    return json({ error: "YouTube API returned 403 (" + (reason || "forbidden") + "): " + message + " " + hint, reason, details: message }, 502);
+  }
+  return json({ error: message, reason: reason || undefined }, 502);
 }
 async function currentUser(request, env) {
   const id = await readSession(request, env.SESSION_SECRET);
