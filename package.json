@@ -2,12 +2,14 @@
   "name": "mythix-hub",
   "version": "0.1.0",
   "private": true,
-  "description": "Geometry Dash YouTube community rewards hub",
+  "description": "Username-based private messaging app on Cloudflare Workers and D1",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply mythix-hub --local",
     "db:remote": "wrangler d1 migrations apply mythix-hub --remote"
   },
-  "devDependencies": { "wrangler": "^4.0.0" }
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
 }
