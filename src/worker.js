@@ -151,14 +151,15 @@ function youtubeErrorResponse(error) {
   const reason = String(error && error.reason || "");
   if (status === 401 || /reconnect Google|no refresh token/i.test(message)) return json({ error: message, reconnect: true }, 401);
   if (status === 403) {
-    const hint = /accessNotConfigured|SERVICE_DISABLED/i.test(reason + " " + message)
+    const combined = reason + " " + message;
+    const hint = /accessNotConfigured|SERVICE_DISABLED/i.test(combined)
       ? "Enable YouTube Data API v3 in the Google Cloud project used by this OAuth client, wait a few minutes, then retry."
-      : /insufficientPermissions|insufficient_scope/i.test(reason + " " + message)
-        ? "This Google login has not granted the YouTube read-only permission. Sign out of Mythix Hub and sign in again, approving the YouTube permission."
-        : /youtubeSignupRequired|youtubeSignup/i.test(reason + " " + message)
+      : /insufficientPermissions|insufficient_scope/i.test(combined)
+        ? "Sign out of Mythix Hub and sign in again, approving the YouTube read-only permission."
+        : /youtubeSignupRequired|youtubeSignup/i.test(combined)
           ? "This Google account needs a YouTube channel before it can use YouTube missions."
-          : "Check the Google account's YouTube access and the YouTube Data API v3 settings.";
-    return json({ error: "YouTube API returned 403 (" + (reason || "forbidden") + "): " + message + " " + hint, reason, details: message }, 502);
+          : "Check this Google account's YouTube access and the YouTube Data API v3 settings.";
+    return json({ error: "YouTube API returned 403 (" + (reason || "forbidden") + "): " + message + " " + hint, reason: reason || "forbidden", details: message }, 502);
   }
   return json({ error: message, reason: reason || undefined }, 502);
 }
