@@ -115,12 +115,17 @@ async function youtubeAccess(user, env) {
   return access;
 }
 async function memberYoutubeIdentity(user, env, access) {
-  const data = await youtubeRequest(access, "channels", { part: "id,snippet", mine: "true", maxResults: "1" });
+  // An empty mine=true response must not break the entire YouTube integration.
+  const data = await youtubeRequest(access, "channels", { part: "id,snippet", mine: "true", maxResults: "50" });
   const channel = (data.items || [])[0];
-  if (!channel) throw new Error("No YouTube channel is linked to this member Google account. Connect a Google account that has its own YouTube channel. It does NOT need to own or manage the Mythix creator channel.");
-  await env.DB.prepare("UPDATE users SET youtube_channel_id=?, youtube_channel_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-    .bind(channel.id, channel.snippet && channel.snippet.title || "YouTube channel", user.id).run();
-  return { id: channel.id, name: channel.snippet && channel.snippet.title || "YouTube channel" };
+  if (channel) {
+    const name = channel.snippet && channel.snippet.title || "YouTube channel";
+    await env.DB.prepare("UPDATE users SET youtube_channel_id=?, youtube_channel_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .bind(channel.id, name, user.id).run();
+    return { id: channel.id, name, linked: true };
+  }
+  if (user.youtube_channel_id) return { id: user.youtube_channel_id, name: user.youtube_channel_name || "YouTube channel", linked: true };
+  return { id: null, name: "YouTube account connected", linked: false };
 }
 async function latestCreatorVideo(access) {
   const creator = await youtubeRequest(access, "channels", { part: "contentDetails,snippet", id: CREATOR_CHANNEL_ID, maxResults: "1" });
@@ -321,7 +326,6 @@ async function handle(request, env) {
     try {
       const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
       const access = await youtubeAccess({ ...user, ...stored }, env);
-      await memberYoutubeIdentity(user, env, access);
       const video = await latestCreatorVideo(access);
       if (!video) return json({ error: "There is no public upload to verify yet." }, 404);
       const existing = await env.DB.prepare("SELECT id FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='like'").bind(user.id, video.id).first();
@@ -347,6 +351,7 @@ async function handle(request, env) {
       const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
       const access = await youtubeAccess({ ...user, ...stored }, env);
       const identity = await memberYoutubeIdentity(user, env, access);
+      if (!identity.id) return json({ error: "Your Google account is connected, but YouTube did not return a channel ID. Like verification can still work; comment verification needs your channel ID to match your comment." }, 409);
       const video = await latestCreatorVideo(access);
       if (!video) return json({ error: "There is no public upload to verify yet." }, 404);
       const existing = await env.DB.prepare("SELECT id FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='comment'").bind(user.id, video.id).first();
