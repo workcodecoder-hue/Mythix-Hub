@@ -48,7 +48,7 @@ const redirect=(location,headers={})=>new Response(null,{status:302,headers:{loc
 const id=(p="id")=>p+"_"+Array.from(crypto.getRandomValues(new Uint8Array(18)),b=>b.toString(16).padStart(2,"0")).join("");
 const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
 const unb64=s=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
-async function derive(password,salt){const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveBits"]);return b64(await crypto.subtle.deriveBits({name:"PBKDF2",salt:unb64(salt),iterations:180000,hash:"SHA-256"},key,256))}
+async function derive(password,salt){const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveBits"]);return b64(await crypto.subtle.deriveBits({name:"PBKDF2",salt:unb64(salt),iterations:100000,hash:"SHA-256"},key,256))}
 async function sign(payload,secret){const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);return b64(await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(payload)))}
 async function session(user,env){const payload=b64(new TextEncoder().encode(JSON.stringify({sub:user.id,exp:Date.now()+7*86400000})));return payload+"."+await sign(payload,env.SESSION_SECRET)}
 async function current(req,env){const raw=(req.headers.get("cookie")||"").split(";").map(x=>x.trim()).find(x=>x.startsWith(COOKIE+"="))?.slice(COOKIE.length+1);if(!raw)return null;const [p,s]=raw.split(".");if(!p||!s||!env.SESSION_SECRET)return null;const expected=await sign(p,env.SESSION_SECRET);if(s.length!==expected.length)return null;let diff=0;for(let i=0;i<s.length;i++)diff|=s.charCodeAt(i)^expected.charCodeAt(i);if(diff)return null;let data;try{data=JSON.parse(new TextDecoder().decode(unb64(p)))}catch{return null}if(data.exp<Date.now())return null;return await env.DB.prepare("SELECT id,username,display_name,bio,avatar_color,is_admin FROM messenger_users WHERE id=?").bind(data.sub).first()}
@@ -72,7 +72,7 @@ async function handle(req,env){
    if(!admin)await env.DB.batch([env.DB.prepare("UPDATE messenger_users SET is_admin=1 WHERE id=?").bind(uid),env.DB.prepare("INSERT OR IGNORE INTO messenger_meta(key,value) VALUES(?,?)").bind(ADMIN_BOOTSTRAP_KEY,uid)]);
    const u=await env.DB.prepare("SELECT id,username,display_name,bio,avatar_color,is_admin FROM messenger_users WHERE id=?").bind(uid).first();
    return json({ok:true,user:cleanUser(u)},201,{"set-cookie":cookie(await session(u,env),604800)});
-  }catch(e){console.error("Registration failure:",e);if(String(e).includes("UNIQUE"))return json({error:"That username is already taken."},409);return json({error:"Registration failed: "+String(e).slice(0,220)},500)}
+  }catch(e){console.error("Registration failure:",e);if(String(e).includes("UNIQUE"))return json({error:"That username is already taken."},409);throw e}
  }
  if(p==="/api/auth/login"&&m==="POST"){
   const d=await body(req),username=String(d.username||"").trim().toLowerCase(),password=String(d.password||"");
