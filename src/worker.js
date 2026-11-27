@@ -344,43 +344,6 @@ async function handle(request, env) {
       return json({ ok: true, awarded: 10, action: "like", video, token_balance: updated.token_balance });
     } catch (error) { return youtubeErrorResponse(error); }
   }
-  if (request.method === "POST" && path === "/api/youtube/verify/comment") {
-    const user = await currentUser(request, env);
-    if (!user) return json({ error: "Sign in first." }, 401);
-    try {
-      const stored = await env.DB.prepare("SELECT google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(user.id).first();
-      const access = await youtubeAccess({ ...user, ...stored }, env);
-      const identity = await memberYoutubeIdentity(user, env, access);
-      if (!identity.id) return json({ error: "Your Google account is connected, but YouTube did not return a channel ID. Like verification can still work; comment verification needs your channel ID to match your comment." }, 409);
-      const video = await latestCreatorVideo(access);
-      if (!video) return json({ error: "There is no public upload to verify yet." }, 404);
-      const existing = await env.DB.prepare("SELECT id FROM video_reward_claims WHERE user_id=? AND video_id=? AND reward_type='comment'").bind(user.id, video.id).first();
-      if (existing) return json({ error: "You've already earned the comment reward for this video.", already_claimed: true }, 409);
-      let pageToken = "";
-      let found = false;
-      for (let page=0; page<10; page++) {
-        const params = { part: "snippet", videoId: video.id, maxResults: "100", order: "time" };
-        if (pageToken) params.pageToken = pageToken;
-        const comments = await youtubeRequest(access, "commentThreads", params);
-        found = (comments.items || []).some(thread => {
-          const comment = thread.snippet && thread.snippet.topLevelComment && thread.snippet.topLevelComment.snippet;
-          return comment && comment.authorChannelId && comment.authorChannelId.value === identity.id;
-        });
-        if (found || !comments.nextPageToken) break;
-        pageToken = comments.nextPageToken;
-      }
-      if (!found) return json({ error: "We couldn't find a public top-level comment from your connected channel on this video yet. Post a comment while signed into this Google account, wait for YouTube to publish it, then try again. Comments held for review or removed cannot be verified." }, 409);
-      const claimId = "vrc_" + randomToken(12);
-      const inserted = await env.DB.prepare("INSERT OR IGNORE INTO video_reward_claims (id,user_id,video_id,reward_type) VALUES (?,?,?,'comment')").bind(claimId,user.id,video.id).run();
-      if (!inserted.meta || inserted.meta.changes !== 1) return json({ error: "You've already earned the comment reward for this video.", already_claimed: true }, 409);
-      await env.DB.batch([
-        env.DB.prepare("UPDATE users SET token_balance=token_balance+10,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id),
-        env.DB.prepare("INSERT INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?,10,'youtube_comment',?)").bind("txn_"+randomToken(12),user.id,video.id)
-      ]);
-      const updated = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(user.id).first();
-      return json({ ok: true, awarded: 10, action: "comment", video, token_balance: updated.token_balance });
-    } catch (error) { return youtubeErrorResponse(error); }
-  }
   if (request.method === "GET" && path === "/api/activity") {
     const user = await currentUser(request, env);
     if (!user) return json({ error: "Sign in first." }, 401);
