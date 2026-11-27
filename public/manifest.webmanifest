@@ -1,0 +1,19 @@
+{
+  "name": "Mythix Hub",
+  "short_name": "Mythix Hub",
+  "description": "Geometry Dash community rewards.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#090914",
+  "theme_color": "#090914",
+  "icons": [
+    {
+      "src": "/icons/mythix-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
