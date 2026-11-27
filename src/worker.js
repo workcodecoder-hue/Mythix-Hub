@@ -421,6 +421,45 @@ async function handle(request, env) {
   }
   return env.ASSETS.fetch(request);
 }
+export class LikeMonitor {
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  async fetch(request) {
+    if (new URL(request.url).pathname !== "/schedule") return new Response("Not found", { status: 404 });
+    await this.ctx.storage.setAlarm(Date.now() + 10000);
+    return new Response("scheduled");
+  }
+  async alarm() {
+    const env = this.env;
+    const pending = await env.DB.prepare("SELECT id,user_id,video_id,claim_id,deadline_at FROM youtube_like_monitors WHERE status='pending' ORDER BY started_at LIMIT 100").all();
+    for (const monitor of (pending.results || [])) {
+      try {
+        const user = await env.DB.prepare("SELECT id,google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(monitor.user_id).first();
+        if (!user) continue;
+        const access = await youtubeAccess(user, env);
+        const rating = await youtubeRequest(access, "videos/getRating", { id: monitor.video_id });
+        const item = (rating.items || []).find(x => x.videoId === monitor.video_id);
+        const now = Date.now();
+        if (!item || item.rating !== "like") {
+          const balance = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(monitor.user_id).first();
+          if (!balance || balance.token_balance < 10) { console.error("Like reversal waiting for sufficient balance", monitor.id); continue; }
+          await env.DB.batch([
+            env.DB.prepare("UPDATE users SET token_balance=token_balance-10,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=10").bind(monitor.user_id),
+            env.DB.prepare("INSERT OR IGNORE INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?, -10,'youtube_like_reversal',?)").bind("txn_"+randomToken(12),monitor.user_id,monitor.video_id),
+            env.DB.prepare("DELETE FROM video_reward_claims WHERE id=? AND user_id=? AND reward_type='like'").bind(monitor.claim_id,monitor.user_id),
+            env.DB.prepare("UPDATE youtube_like_monitors SET status='reversed',last_checked_at=? WHERE id=? AND status='pending'").bind(now,monitor.id)
+          ]);
+        } else if (now >= Number(monitor.deadline_at)) {
+          await env.DB.prepare("UPDATE youtube_like_monitors SET status='confirmed',last_checked_at=? WHERE id=? AND status='pending'").bind(now,monitor.id).run();
+        } else {
+          await env.DB.prepare("UPDATE youtube_like_monitors SET last_checked_at=? WHERE id=? AND status='pending'").bind(now,monitor.id).run();
+        }
+      } catch (error) { console.error("Like monitor check failed; retrying without penalizing member", monitor.id, error); }
+    }
+    const remaining = await env.DB.prepare("SELECT COUNT(*) AS count FROM youtube_like_monitors WHERE status='pending'").first();
+    if (remaining && remaining.count > 0) await this.ctx.storage.setAlarm(Date.now() + 10000);
+  }
+}
+
 export default {
   async fetch(request, env) {
     try { return await handle(request, env); }
