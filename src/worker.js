@@ -159,7 +159,8 @@ function youtubeErrorResponse(error) {
         : /youtubeSignupRequired|youtubeSignup/i.test(combined)
           ? "This Google account needs a YouTube channel before it can use YouTube missions."
           : "Check this Google account's YouTube access and the YouTube Data API v3 settings.";
-    return json({ error: "YouTube API returned 403 (" + (reason || "forbidden") + "): " + message + " " + hint, reason: reason || "forbidden", details: message }, 502);
+    const missingScope = /insufficientPermissions|insufficient_scope/i.test(combined);
+    return json({ error: "YouTube API returned 403 (" + (reason || "forbidden") + "): " + message + " " + hint, reason: reason || "forbidden", details: message, reconnect: missingScope, code: missingScope ? "youtube_scope_missing" : "youtube_api_forbidden" }, missingScope ? 403 : 502);
   }
   return json({ error: message, reason: reason || undefined }, 502);
 }
@@ -177,7 +178,7 @@ async function handle(request, env) {
   if (request.method === "GET" && path === "/api/health") {
     return json({ ok: true, service: "mythix-hub-api", databaseConfigured: !!env.DB, oauthConfigured: !requiredEnv(env).length });
   }
-  if (request.method === "GET" && path === "/api/auth/google") {
+  if (request.method === "GET" && (path === "/api/auth/google" || path === "/api/auth/youtube")) {
     const missing = requiredEnv(env);
     if (missing.length) return json({ error: "Google sign-in is not configured yet.", missing }, 503);
     const state = randomToken(32);
@@ -193,7 +194,7 @@ async function handle(request, env) {
       code_challenge: challenge,
       code_challenge_method: "S256",
       access_type: "offline",
-      prompt: "select_account",
+      prompt: path === "/api/auth/youtube" ? "consent select_account" : "select_account",
       include_granted_scopes: "true"
     });
     return redirect(GOOGLE_AUTH + "?" + params.toString());
