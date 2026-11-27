@@ -436,14 +436,14 @@ export class LikeMonitor {
     await Promise.all((pending.results || []).map(async monitor => {
       try {
         const user = await env.DB.prepare("SELECT id,google_access_token_enc,google_refresh_token_enc,google_token_expires_at FROM users WHERE id=?").bind(monitor.user_id).first();
-        if (!user) continue;
+        if (!user) return;
         const access = await youtubeAccess(user, env);
         const rating = await youtubeRequest(access, "videos/getRating", { id: monitor.video_id });
         const item = (rating.items || []).find(x => x.videoId === monitor.video_id);
         const now = Date.now();
         if (!item || item.rating !== "like") {
           const balance = await env.DB.prepare("SELECT token_balance FROM users WHERE id=?").bind(monitor.user_id).first();
-          if (!balance || balance.token_balance < 10) { console.error("Like reversal waiting for sufficient balance", monitor.id); continue; }
+          if (!balance || balance.token_balance < 10) { console.error("Like reversal waiting for sufficient balance", monitor.id); return; }
           await env.DB.batch([
             env.DB.prepare("UPDATE users SET token_balance=token_balance-10,updated_at=CURRENT_TIMESTAMP WHERE id=? AND token_balance>=10").bind(monitor.user_id),
             env.DB.prepare("INSERT OR IGNORE INTO token_transactions (id,user_id,amount,reason,reference_id) VALUES (?,?, -10,'youtube_like_reversal',?)").bind("txn_"+randomToken(12),monitor.user_id,monitor.video_id),
