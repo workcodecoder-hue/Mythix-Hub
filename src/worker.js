@@ -38,6 +38,7 @@ $('findPeople').onclick=openPeople;$('newGroupBtn').onclick=openGroup;
 $('profileBtn').onclick=()=>{const root=$('modalRoot');root.innerHTML='<div class="modal-back"><div class="modal"><h3>Your profile</h3><label class="field-label">Display name</label><input class="field" id="editName" maxlength="32"><label class="field-label">About you</label><input class="field" id="editBio" maxlength="120"><button class="primary" id="saveProfile" style="width:100%;margin-top:17px">Save profile</button><button class="secondary" id="closeProfile" style="width:100%;margin-top:9px">Cancel</button></div></div>';root.querySelector('.modal-back').onclick=e=>{if(e.target.classList.contains('modal-back'))root.innerHTML=''};$('editName').value=me.display_name;$('editBio').value=me.bio||'';$('closeProfile').onclick=()=>root.innerHTML='';$('saveProfile').onclick=async()=>{try{me=(await api('/api/profile',{method:'PATCH',body:JSON.stringify({display_name:$('editName').value,bio:$('editBio').value})})).user;$('myName').textContent=me.display_name;root.innerHTML='';toast('Profile updated')}catch(e){toast(e.message)}}};
 $('chatHeader').addEventListener('click',e=>{if(e.target.id==='backBtn')backToList()});
 async function init(){try{const d=await api('/api/me');me=d.user;showApp()}catch{showAuth()}}
+if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js",{scope:"/"}).catch(()=>{}))}
 init();
 </script></body></html>`;
 const COOKIE="mythix_session";
