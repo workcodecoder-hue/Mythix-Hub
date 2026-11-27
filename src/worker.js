@@ -66,16 +66,31 @@ const PWA_MANIFEST = {
 };
 const PWA_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8065f4"/><stop offset="1" stop-color="#c17cfb"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="#10101b"/><rect x="48" y="48" width="416" height="416" rx="104" fill="url(#g)"/><path d="M132 354V158h57l67 91 67-91h57v196h-59V246l-65 85-65-85v108z" fill="white"/></svg>`;
 const PWA_SW = `const CACHE="mythix-messenger-shell-v2";const SHELL=["/","/manifest.webmanifest","/icon.svg"];self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()))});self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});self.addEventListener("push",e=>{let data={title:"Mythix Messenger",body:"You have a new message.",url:"/"};try{data={...data,...e.data.json()}}catch{}e.waitUntil(self.registration.showNotification(data.title||"Mythix Messenger",{body:data.body||"You have a new message.",icon:"/icon.svg",badge:"/icon.svg",tag:data.tag||"mythix-message",renotify:true,data:{url:data.url||"/"}}))});self.addEventListener("notificationclick",e=>{e.notification.close();const target=e.notification.data&&e.notification.data.url||"/";e.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(list=>{for(const c of list){if("focus"in c){c.navigate(target);return c.focus()}}return clients.openWindow(target)}))});self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==self.location.origin||u.pathname.startsWith("/api/")||e.request.method!=="GET")return;if(e.request.mode==="navigate"){e.respondWith(fetch(e.request).then(r=>{if(r.ok){const copy=r.clone();caches.open(CACHE).then(c=>c.put("/",copy))}return r}).catch(()=>caches.match("/")));return}if(SHELL.includes(u.pathname)){e.respondWith(caches.match(e.request).then(cached=>cached||fetch(e.request).then(r=>{if(r.ok){const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy))}return r})))}});`;
-const VAPID_PUBLIC_KEY="BLAbewkf_FowF6cHC2hAP4k1f7VEA4Z5j8eDzKAMmqskC-EmOivWNHouf68WIX7ARGcgrA2dd0rB5Wv_PMds6Fs";
+async function getVapidKeys(env){
+ let priv=await env.DB.prepare("SELECT value FROM messenger_meta WHERE key='vapid_private_jwk'").first();
+ let pub=await env.DB.prepare("SELECT value FROM messenger_meta WHERE key='vapid_public_key'").first();
+ if(!priv||!pub){
+  const pair=await crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign","verify"]);
+  const jwk=await crypto.subtle.exportKey("jwk",pair.privateKey);
+  const publicRaw=new Uint8Array(await crypto.subtle.exportKey("raw",pair.publicKey));
+  await env.DB.batch([
+   env.DB.prepare("INSERT OR IGNORE INTO messenger_meta(key,value) VALUES('vapid_private_jwk',?)").bind(JSON.stringify({kty:jwk.kty,crv:jwk.crv,x:jwk.x,y:jwk.y,d:jwk.d})),
+   env.DB.prepare("INSERT OR IGNORE INTO messenger_meta(key,value) VALUES('vapid_public_key',?)").bind(b64(publicRaw))
+  ]);
+  priv=await env.DB.prepare("SELECT value FROM messenger_meta WHERE key='vapid_private_jwk'").first();
+  pub=await env.DB.prepare("SELECT value FROM messenger_meta WHERE key='vapid_public_key'").first();
+ }
+ return {privateJwk:JSON.parse(priv.value),publicKey:pub.value};
+}
 async function hmac256(key,data){const k=await crypto.subtle.importKey("raw",key,{name:"HMAC",hash:"SHA-256"},false,["sign"]);return new Uint8Array(await crypto.subtle.sign("HMAC",k,data))}
 async function hkdfExpand(prk,info,length){let out=new Uint8Array(0),prev=new Uint8Array(0),i=1;while(out.length<length){const input=new Uint8Array(prev.length+info.length+1);input.set(prev);input.set(info,prev.length);input[input.length-1]=i++;prev=await hmac256(prk,input);const next=new Uint8Array(out.length+prev.length);next.set(out);next.set(prev,out.length);out=next}return out.slice(0,length)}
 async function webPush(subscription,payload,env){
- if(!env.VAPID_PRIVATE_JWK)throw new Error("VAPID_PRIVATE_JWK secret is not configured");
+ const vapid=await getVapidKeys(env);
  const endpoint=new URL(subscription.endpoint),aud=endpoint.origin,now=Math.floor(Date.now()/1000);
  const header=b64(new TextEncoder().encode(JSON.stringify({typ:"JWT",alg:"ES256"})));
  const claims=b64(new TextEncoder().encode(JSON.stringify({aud,exp:now+43200,sub:"mailto:notifications@mythix-hub.workers.dev"})));
  const unsigned=header+"."+claims;
- const signingKey=await crypto.subtle.importKey("jwk",JSON.parse(env.VAPID_PRIVATE_JWK),{name:"ECDSA",namedCurve:"P-256"},false,["sign"]);
+ const signingKey=await crypto.subtle.importKey("jwk",vapid.privateJwk,{name:"ECDSA",namedCurve:"P-256"},false,["sign"]);
  const signature=new Uint8Array(await crypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},signingKey,new TextEncoder().encode(unsigned)));
  const jwt=unsigned+"."+b64(signature);
  const uaPublic=unb64(subscription.keys.p256dh),auth=unb64(subscription.keys.auth);
@@ -92,7 +107,7 @@ async function webPush(subscription,payload,env){
  const aes=await crypto.subtle.importKey("raw",cek,{name:"AES-GCM"},false,["encrypt"]);
  const encrypted=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv:nonce,tagLength:128},aes,plain));
  const record=new Uint8Array(16+4+1+serverPublic.length+encrypted.length);record.set(salt,0);new DataView(record.buffer).setUint32(16,4096,false);record[20]=serverPublic.length;record.set(serverPublic,21);record.set(encrypted,21+serverPublic.length);
- const response=await fetch(subscription.endpoint,{method:"POST",headers:{"Authorization":"vapid t="+jwt+", k="+VAPID_PUBLIC_KEY,"Content-Encoding":"aes128gcm","Content-Type":"application/octet-stream","TTL":"86400","Urgency":"normal"},body:record});
+ const response=await fetch(subscription.endpoint,{method:"POST",headers:{"Authorization":"vapid t="+jwt+", k="+vapid.publicKey,"Content-Encoding":"aes128gcm","Content-Type":"application/octet-stream","TTL":"86400","Urgency":"normal"},body:record});
  if(!response.ok)throw Object.assign(new Error("Push service returned "+response.status),{status:response.status});
 }
 async function notifyConversationMembers(env,conversationId,senderId,senderName,message){
@@ -122,7 +137,7 @@ async function handle(req,env){
  if(p==="/sw.js")return new Response(PWA_SW,{headers:{"content-type":"application/javascript; charset=utf-8","cache-control":"no-cache","service-worker-allowed":"/"}});
  if(p==="/"||p==="/index.html")return html();
 
- if(p==="/api/push/public-key"&&m==="GET")return json({publicKey:VAPID_PUBLIC_KEY});
+ if(p==="/api/push/public-key"&&m==="GET")return json({publicKey:(await getVapidKeys(env)).publicKey});
  if(p==="/api/health")return json({ok:true,service:"mythix-messenger",databaseConfigured:!!env.DB,auth:"username-password"});
  if(p==="/api/auth/register"&&m==="POST"){
   const d=await body(req),username=String(d.username||"").trim().toLowerCase(),display=String(d.display_name||username).trim(),password=String(d.password||"");
