@@ -117,7 +117,7 @@ async function youtubeAccess(user, env) {
 async function memberYoutubeIdentity(user, env, access) {
   const data = await youtubeRequest(access, "channels", { part: "id,snippet", mine: "true", maxResults: "1" });
   const channel = (data.items || [])[0];
-  if (!channel) throw new Error("No YouTube channel was found on this Google account. Make sure you signed in with the Google account that owns your YouTube channel.");
+  if (!channel) throw new Error("No YouTube channel is linked to this member Google account. Connect a Google account that has its own YouTube channel. It does NOT need to own or manage the Mythix creator channel.");
   await env.DB.prepare("UPDATE users SET youtube_channel_id=?, youtube_channel_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .bind(channel.id, channel.snippet && channel.snippet.title || "YouTube channel", user.id).run();
   return { id: channel.id, name: channel.snippet && channel.snippet.title || "YouTube channel" };
