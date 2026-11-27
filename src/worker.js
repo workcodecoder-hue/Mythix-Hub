@@ -65,14 +65,14 @@ async function handle(req,env){
   if(!/^[a-z0-9_]{3,24}$/.test(username))return json({error:"Username must be 3–24 characters using letters, numbers, or underscores."},400);
   if(display.length<1||display.length>32)return json({error:"Display name must be 1–32 characters."},400);
   if(password.length<10||password.length>128)return json({error:"Password must be at least 10 characters."},400);
-  const salt=b64(crypto.getRandomValues(new Uint8Array(16))),hash=await derive(password,salt),uid=id("usr");
   try{
+   const salt=b64(crypto.getRandomValues(new Uint8Array(16))),hash=await derive(password,salt),uid=id("usr");
    await env.DB.prepare("INSERT INTO messenger_users(id,username,password_hash,password_salt,display_name) VALUES(?,?,?,?,?)").bind(uid,username,hash,salt,display).run();
    const admin=await env.DB.prepare("SELECT value FROM messenger_meta WHERE key=?").bind(ADMIN_BOOTSTRAP_KEY).first();
    if(!admin)await env.DB.batch([env.DB.prepare("UPDATE messenger_users SET is_admin=1 WHERE id=?").bind(uid),env.DB.prepare("INSERT OR IGNORE INTO messenger_meta(key,value) VALUES(?,?)").bind(ADMIN_BOOTSTRAP_KEY,uid)]);
    const u=await env.DB.prepare("SELECT id,username,display_name,bio,avatar_color,is_admin FROM messenger_users WHERE id=?").bind(uid).first();
    return json({ok:true,user:cleanUser(u)},201,{"set-cookie":cookie(await session(u,env),604800)});
-  }catch(e){if(String(e).includes("UNIQUE"))return json({error:"That username is already taken."},409);throw e}
+  }catch(e){console.error("Registration failure:",e);if(String(e).includes("UNIQUE"))return json({error:"That username is already taken."},409);return json({error:"Registration failed: "+String(e).slice(0,220)},500)}
  }
  if(p==="/api/auth/login"&&m==="POST"){
   const d=await body(req),username=String(d.username||"").trim().toLowerCase(),password=String(d.password||"");
